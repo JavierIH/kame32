@@ -12,6 +12,19 @@
 //           USB  |
 
 
+//  Wiring: 
+//                | USB
+//                |
+//               \ /
+//             ______
+//             |____|
+//                         
+//       . . . .   . . . .  +   (red)
+//       . . . .   . . . .  -   (brown)
+//       . . . .   . . . .  ctl (yellow)
+//       4 5 1 0   6 2 3 7
+
+
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
