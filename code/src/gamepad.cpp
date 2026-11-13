@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include <driver/gpio.h>
 #include <config.h>
 #include <kame.h>
 #include <gamepad.h>
@@ -24,6 +25,20 @@ float phase_linear[] =  {90,  90,  270, 90,  270, 270, 90,  270};
 float phase_angular[] = {90,  270, 270, 90,  270, 90,  90,  270};
 float phase[] =         {0,   0,   0,   0,   0,   0,   0,   0};
 
+#define HEARTBEAT_TIMEOUT       1500
+#define HEARTBEATS_TO_CONNECT   2
+#define GAMEPAD_PRIORITY_TIME   2000
+#define MAX_LINE_LENGTH         40
+
+bool echoear_connected = false;
+int heartbeats = 0;
+unsigned long last_heartbeat = 0;
+unsigned long last_gamepad_command = 0;
+
+String line = "";
+String emotion = "";
+String last_emotion = "";
+
 
 void handleRoot() {
     server.send(200, "text/html", gamepad_html);
@@ -33,6 +48,7 @@ void handleJoystick() {
     if (server.hasArg("x") && server.hasArg("y")) {
         joy_x = server.arg("x").toInt();
         joy_y = server.arg("y").toInt();
+        if (joy_x != 0 || joy_y != 0) last_gamepad_command = millis();
         server.send(200, "text/plain", "OK");
     } else {
         server.send(400, "text/plain", "Missing x or y");
@@ -62,15 +78,80 @@ void handleButton() {
         } else {
             Serial.println("Unknown button: " + label);
         }
+        last_gamepad_command = millis();
         server.send(200, "text/plain", "Button OK");
     } else {
         server.send(400, "text/plain", "Missing label");
     }
 }
 
+void handleLine() {
+    if (line == "H") {
+        if (millis() - last_heartbeat > HEARTBEAT_TIMEOUT) heartbeats = 0;
+        heartbeats++;
+        last_heartbeat = millis();
+    } else if (line.startsWith("E:")) {
+        emotion = line.substring(2);
+    }
+}
+
+void readEchoEar() {
+    while (Serial2.available()) {
+        char c = Serial2.read();
+        if (c == '\n') {
+            handleLine();
+            line = "";
+        } else {
+            if (line.length() >= MAX_LINE_LENGTH) line = "";
+            line += c;
+        }
+    }
+}
+
+void react() {
+    Serial.println(emotion);
+    if (emotion == "happy" || emotion == "laughing" || emotion == "funny") {
+        robot.dance(2, 600);
+    } else if (emotion == "loving" || emotion == "kissy" || emotion == "relaxed") {
+        robot.moonwalkL(2, 1000);
+    } else if (emotion == "surprised" || emotion == "shocked") {
+        robot.jump();
+    } else if (emotion == "angry") {
+        robot.pushUp(2, 800);
+    } else if (emotion == "thinking" || emotion == "confused") {
+        robot.frontBack(2, 1000);
+    } else if (emotion == "winking" || emotion == "cool" || emotion == "confident") {
+        robot.hello();
+    } else if (emotion == "sad" || emotion == "crying" || emotion == "sleepy") {
+        robot.upDown(1, 2000);
+    }
+}
+
+void handleEchoEar() {
+    readEchoEar();
+
+    bool connected = heartbeats >= HEARTBEATS_TO_CONNECT && millis() - last_heartbeat < HEARTBEAT_TIMEOUT;
+    if (connected && !echoear_connected) robot.arm();
+    echoear_connected = connected;
+    digitalWrite(LED_PIN, connected);
+
+    if (emotion == "") return;
+
+    // Gamepad has priority over emotions
+    bool gamepad_active = joy_x != 0 || joy_y != 0 || millis() - last_gamepad_command < GAMEPAD_PRIORITY_TIME;
+    if (connected && !gamepad_active && robot._armed && emotion != last_emotion) {
+        last_emotion = emotion;
+        react();
+    }
+    emotion = "";
+}
+
 
 void setup() {
     Serial.begin(115200);
+    Serial2.begin(ECHOEAR_BAUDRATE, SERIAL_8N1, ECHOEAR_RX_PIN, ECHOEAR_TX_PIN);
+    gpio_pullup_en((gpio_num_t)ECHOEAR_RX_PIN);
+    pinMode(LED_PIN, OUTPUT);
 
     WiFi.mode(WIFI_AP);
     WiFi.softAP(SSID, PASSWORD);
@@ -89,6 +170,7 @@ void setup() {
 
 void loop() {
     server.handleClient();
+    handleEchoEar();
 
     progress += robot.oscillator[0].getPhaseProgress();
     while (progress > 360)
